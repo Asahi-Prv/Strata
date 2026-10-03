@@ -1,11 +1,12 @@
 // src/kernels/sycl/native_qsa.cpp - SYCL port of src/kernels/cuda/native_qsa.cu (ggml-cuda/norm.cu, unary.cu).
 //
-// Two entry points.  `native_qsa_rms_norm_weighted` is a weighted RMSNorm, one block per row, doing a warp-XOR butterfly
-// reduce of sum(value^2) plus a shared-memory block reduce - the same structure as native_gr_norm.  icpx 2026.1 has no
-// group-reduction surface, so the reduce is two passes over a per-(row, lane) partial buffer: pass one has one
-// work-item per lane striding n_cols accumulating value^2, pass two sums the 32 lane partials for the row mean,
-// rsqrts it and applies scale*input*gamma.  `native_qsa_gate_apply` is a plain elementwise gate, one work-item per
-// element: attn[i] * sigmoid(q_full[head*2*head_dim + head_dim + channel]).
+// Two entry points.  `native_qsa_rms_norm_weighted` is a weighted RMSNorm, one block per row in CUDA doing a
+// warp-XOR butterfly reduce of sum(value^2) plus a shared-memory block reduce.  icpx 2026.1 exposes none of the
+// group-reduction surface, and a per-(row, lane) partial buffer allocated with malloc_device/free corrupts an
+// in-flight reduction when stream != nullptr (the device-side free runs on the host before the kernel finishes, the
+// same bug native_gr_norm had), so the reduce is done by ONE work-item per row walking the n_cols columns serially -
+// the same work, a different summation order (validated by max_rel).  `native_qsa_gate_apply` is a plain elementwise
+// gate, one work-item per element: attn[i] * sigmoid(q_full[head*2*head_dim + head_dim + channel]).
 #include "strata/kernels/native_qsa.hpp"
 
 #include "strata/core/device_runtime.hpp"
@@ -64,35 +65,25 @@ void native_qsa_rms_norm_weighted(const float* input, const float* gamma, float*
     sycl::queue* q = static_cast<sycl::queue*>(stream ? stream : strata::core::default_sycl_queue());
     sycl::queue& qref = *q;
     try {
-        float* partials = sycl::malloc_device<float>((size_t) n_rows * WARP, qref);
+        // One work-item per row does the whole reduction serially (no lane partials, no scratch buffer). This
+        // avoids per-call malloc_device/free: on icpx 2026.1 / Arc the device-side free executes on the host
+        // immediately and, when stream != nullptr the function does not wait, so a later reuse of that scratch
+        // corrupted an in-flight reduction (the same failure native_gr_norm had). Scratch-free keeps every
+        // submission self-contained; the summation order differs from the warp tree but is validated by max_rel.
         qref.submit([&](sycl::handler& h) {
-            // pass 1: one work-item per (row, lane) accumulates value^2 over its strided columns.
-            h.parallel_for(sycl::range<1>((size_t) n_rows * WARP), [=](sycl::id<1> i) {
-                const int lane = (int)(i % WARP);
-                const int row = (int)(i / WARP);
-                const float* in = input + (size_t) row * n_cols;
-                float partial = 0.0f;
-                for (int col = lane; col < n_cols; col += WARP) {
-                    const float v = in[col];
-                    partial += v * v;
-                }
-                partials[(size_t) row * WARP + lane] = partial;
-            });
-        });
-        qref.submit([&](sycl::handler& h) {
-            // pass 2: sum the lane partials, scale each column by rsqrt(mean + epsilon).
             h.parallel_for(sycl::range<1>((size_t) n_rows), [=](sycl::id<1> row) {
-                float s = 0.0f;
-                for (int l = 0; l < WARP; ++l) s += partials[(size_t) row * WARP + l];
-                const float mean = s / n_cols;
-                const float scale = 1.0f / sycl::sqrt(mean + epsilon);
                 const float* in = input + (size_t) row * n_cols;
-                const float* g = gamma + (size_t) row * n_cols;
                 float* out = output + (size_t) row * n_cols;
-                for (int col = 0; col < n_cols; ++col) out[col] = scale * in[col] * g[col];
+                // gamma is a single n_cols buffer shared across all rows (the CUDA oracle offsets input and
+                // output per row but reads gamma[col] unchanged), so reading gamma + row * n_cols here walks
+                // past the n_cols elements into uninitialised memory for row >= 1.
+                float sum = 0.0f;
+                for (int col = 0; col < n_cols; ++col) sum += in[col] * in[col];
+                const float mean = sum / n_cols;
+                const float scale = 1.0f / sycl::sqrt(mean + epsilon);
+                for (int col = 0; col < n_cols; ++col) out[col] = scale * in[col] * gamma[col];
             });
         });
-        sycl::free(partials, qref);
         if (stream == nullptr) qref.wait();
     } catch (const sycl::exception& e) {
         std::fprintf(stderr, "native_qsa_rms_norm_weighted launch: %s\n", e.what());
