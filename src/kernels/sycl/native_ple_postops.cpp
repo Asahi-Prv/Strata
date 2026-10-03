@@ -75,6 +75,10 @@ void native_ple_postops(const float* projected_key, const float* hidden,
     // grouped_norm(projected_key) -> key, grouped_norm(hidden) -> query (temporary, may alias normalized).
     native_gr_rms_norm_weighted(projected_key, w.norm_key, b.key, N, H, NG_RMS_EPS, q);
     native_gr_rms_norm_weighted(hidden, w.norm_query, b.query, N, H, NG_RMS_EPS, q);
+    // icpx 2026.1 on Arc does not reliably order a same-queue kernel read against the prior kernel's write into a
+    // malloc_device buffer (worst with reused addresses), so the gate below can read stale key/query. Flush the two
+    // norms before the dependent kernels launch; the same rule applies to the norm3 output before conv below.
+    q->wait();
     // gate = sigmoid(sign(sqrt(max(|s|,eps))) * s) with s = (key.query)/sqrt(N).
     q->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>((size_t)H), [=](sycl::id<1> row) {
@@ -97,6 +101,7 @@ void native_ple_postops(const float* projected_key, const float* hidden,
     });
     // grouped_norm(gated) -> normalized (the conv input).
     native_gr_rms_norm_weighted(b.gated, w.norm_conv, b.normalized, N, H, NG_RMS_EPS, q);
+    q->wait();
     // dilation-3, kernel-4 conv over the row-fastest history rows; silu into hidden + gated + conv.
     q->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>((size_t)D), [=](sycl::id<1> c) {

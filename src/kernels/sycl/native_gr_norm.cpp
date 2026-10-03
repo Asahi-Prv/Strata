@@ -44,35 +44,22 @@ void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* 
     sycl::queue* q = static_cast<sycl::queue*>(stream ? stream : strata::core::default_sycl_queue());
     sycl::queue& qref = *q;
     try {
-        float* partials = sycl::malloc_device<float>((size_t) n_rows * WARP, qref);
+        // One work-item per row does the whole reduction serially (no lane partials, no scratch buffer).
+        // This avoids per-call malloc_device/free: on icpx 2026.1 / Arc the device-side free executes on the
+        // host immediately and, when stream != nullptr the function does not wait, so a later reuse of that
+        // scratch corrupted an in-flight reduction. Scratch-free keeps every submission self-contained.
         qref.submit([&](sycl::handler& h) {
-            // pass 1: one work-item per (row, lane) accumulates value^2 over its strided columns.
-            h.parallel_for(sycl::range<1>((size_t) n_rows * WARP), [=](sycl::id<1> i) {
-                const int lane = (int)(i % WARP);
-                const int row = (int)(i / WARP);
-                const float* in = input + (size_t) row * n_cols;
-                float partial = 0.0f;
-                for (int col = lane; col < n_cols; col += WARP) {
-                    const float v = in[col];
-                    partial += v * v;
-                }
-                partials[(size_t) row * WARP + lane] = partial;
-            });
-        });
-        qref.submit([&](sycl::handler& h) {
-            // pass 2: sum the lane partials, scale each column by rsqrt(mean + epsilon).
             h.parallel_for(sycl::range<1>((size_t) n_rows), [=](sycl::id<1> row) {
-                float s = 0.0f;
-                for (int l = 0; l < WARP; ++l) s += partials[(size_t) row * WARP + l];
-                const float mean = s / n_cols;
-                const float scale = 1.0f / sycl::sqrt(mean + epsilon);
                 const float* in = input + (size_t) row * n_cols;
                 const float* g = gamma + (size_t) row * n_cols;
                 float* out = output + (size_t) row * n_cols;
+                float sum = 0.0f;
+                for (int col = 0; col < n_cols; ++col) sum += in[col] * in[col];
+                const float mean = sum / n_cols;
+                const float scale = 1.0f / sycl::sqrt(mean + epsilon);
                 for (int col = 0; col < n_cols; ++col) out[col] = scale * in[col] * g[col];
             });
         });
-        sycl::free(partials, qref);
         if (stream == nullptr) qref.wait();
     } catch (const sycl::exception& e) {
         std::fprintf(stderr, "native_gr_rms_norm_weighted launch: %s\n", e.what());

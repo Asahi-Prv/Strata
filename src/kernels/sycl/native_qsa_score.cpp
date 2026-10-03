@@ -50,13 +50,17 @@ void native_qsa_score(const float* pooled, const float* query, const float* bloc
         for (int j = i + 1; j < count; ++j)
             if (overlaps(spans[i], spans[j])) throw std::invalid_argument("native QSA score spans overlap");
     sycl::queue* q = static_cast<sycl::queue*>(stream ? stream : strata::core::default_sycl_queue());
+    // icpx 2026.1 / Arc rejects int64_t captured by value in a kernel closure (UR_RESULT_ERROR_DEVICE_LOST)
+    // and any composite struct (UR_RESULT_ERROR_OUT_OF_RESOURCES); keep the body to int32/pointer captures.
+    const int mcell = (int)max_cells;
+    int32_t hs[kStepCount]; q->memcpy(hs, step, kStepCount * 4); q->wait();
+    const int st_n = hs[kStepNKv], st_full = hs[kStepNBid], st_pos = hs[kStepPos], st_w = hs[kStepWidth];
     try {
         q->submit([&](sycl::handler& h) {
             h.parallel_for(sycl::range<1>((size_t)max_blocks), [=](sycl::id<1> row) {
                 const int irow = (int)row;
-                const int n = step[kStepNKv], full = step[kStepNBid];
-                if (n < 1 || n > max_cells || step[kStepPos] != n - 1 || full != n / R ||
-                    step[kStepWidth] != (n < 2051 ? n : 2051))
+                const int n = st_n, full = st_full;
+                if (n < 1 || n > mcell || st_pos != n - 1 || full != n / R || st_w != (n < 2051 ? n : 2051))
                     return;
                 if (irow > full) return;
                 float h[HEADS];
