@@ -62,9 +62,14 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
     const int32_t* mtab = mrope_table();
     sycl::queue* q = static_cast<sycl::queue*>(stream ? stream : strata::core::default_sycl_queue());
     try {
-        float* vals = sycl::malloc_device<float>(D, *q);
         q->submit([&](sycl::handler& h) {
             h.parallel_for(sycl::range<1>(1), [=](sycl::id<1>) {
+                // The kernel is ONE work-item walking all D elements serially, so the pooled key lives on the work-item
+                // stack instead of a malloc_device/free pair: on icpx 2026.1 / Arc the device-side free executes on
+                // the host before the kernel finishes and, when stream != nullptr the function does not wait, so each
+                // per-call free leaked until the queue was drained - a few appends ran OUT_OF_DEVICE_MEMORY. A
+                // scratch-free submission is self-contained, exactly like native_gr_rms_norm_weighted.
+                float vals[D];
                 const int pos = *relative_pos_device;
                 if (pos < 0 || pos >= max_cells) return;
                 const int slot = pos % R;
@@ -105,7 +110,6 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
                     }
                 });
         });
-        sycl::free(vals, *q);
         if (stream == nullptr) q->wait();
     } catch (const sycl::exception& e) {
         std::fprintf(stderr, "native_qsa_indexer_append launch: %s\n", e.what());
