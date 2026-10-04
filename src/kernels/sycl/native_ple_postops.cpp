@@ -93,12 +93,16 @@ void native_ple_postops(const float* projected_key, const float* hidden,
             p_gate[row] = 1.0f / (1.0f + sycl::exp(-sign * mag));
         });
     });
+    // The broadcast reads p_gate, so flush the gate before it launches (same out-of-order ordering rule as above).
+    q->wait();
     // broadcast: gated[c] = value[c % N] * gate[c / N].
     q->submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>((size_t)D), [=](sycl::id<1> c) {
             p_gated[c] = value_local[c % N] * p_gate[c / N];
         });
     });
+    // The conv input norm reads p_gated, so flush the broadcast before it launches.
+    q->wait();
     // grouped_norm(gated) -> normalized (the conv input).
     native_gr_rms_norm_weighted(b.gated, w.norm_conv, b.normalized, N, H, NG_RMS_EPS, q);
     q->wait();
