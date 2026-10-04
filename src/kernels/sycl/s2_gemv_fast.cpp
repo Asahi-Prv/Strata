@@ -3,8 +3,10 @@
 // The CUDA source is a micro-benchmark that precomputes a constant-memory code LUT and optionally stages `x` in shared
 // memory; both were measured neutral-to-negative, and neither changes the arithmetic, so this port matches the numerics
 // of s2_gemv_quads (bias-adjusted code times group scale times dequantised activation, packed as (a0+a1)+(a2+a3)) and
-// ignores the staging, which is purely a load pattern.  The tree reduction becomes the standard two-pass per-(row, lane)
-// partial sum.  Not bit-identical, exact per product.
+// ignores the staging, which is purely a load pattern.  One work-group per row: lanes stride the quads and the lane
+// partials are reduced through a local-accessor buffer with a group barrier (icpx 2026.1 queues are out-of-order, so
+// the earlier two-submit partials buffer raced).  Lane 0 sums in lane order, so it matches the two-pass form
+// bit-for-bit.
 #include "strata/kernels/s_gemv.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
@@ -38,12 +40,12 @@ void s2_gemv_fast(const uint16_t* x, const uint8_t* codes, const float* scales, 
     }
     sycl::queue* q = static_cast<sycl::queue*>(strata::core::default_sycl_queue());
     try {
-        float* partials = sycl::malloc_device<float>((size_t) n_out * threads_per_row, *q);
         q->submit([&](sycl::handler& h) {
-            h.parallel_for(sycl::range<1>((size_t) n_out * threads_per_row), [=](sycl::id<1> i) {
-                const int lane = (int)(i % threads_per_row);
-                const long long o = (long long)(i / threads_per_row);
-                if (o >= n_out) return;
+            sycl::local_accessor<float, 1> partials(sycl::range<1>((size_t) threads_per_row), h);
+            h.parallel_for(sycl::nd_range<1>((size_t) n_out * (size_t) threads_per_row, (size_t) threads_per_row),
+                           [=](sycl::nd_item<1> item) {
+                const int lane = (int) item.get_local_id(0);
+                const long long o = (long long) item.get_group(0);
                 const long long n_quads = n_in / 4;
                 const uint8_t* c = codes + o * n_quads;
                 const float* s = scales + o * (n_in / QK_S2);
@@ -62,18 +64,16 @@ void s2_gemv_fast(const uint16_t* x, const uint8_t* codes, const float* scales, 
                     a2 += w2 * f32_from_f16(hi);
                     a3 += w3 * f32_from_f16((uint16_t)(hi >> 16));
                 }
-                partials[(size_t) o * threads_per_row + lane] = (a0 + a1) + (a2 + a3);
-            });
-        });
-        q->submit([&](sycl::handler& h) {
-            h.parallel_for(sycl::range<1>((size_t) n_out), [=](sycl::id<1> o) {
-                float s = 0.0f;
-                for (int l = 0; l < threads_per_row; ++l) s += partials[(size_t) o * threads_per_row + l];
-                y[o] = s;
+                partials[lane] = (a0 + a1) + (a2 + a3);
+                sycl::group_barrier(item.get_group());
+                if (lane == 0) {
+                    float ss = 0.0f;
+                    for (int l = 0; l < threads_per_row; ++l) ss += partials[l];
+                    y[o] = ss;
+                }
             });
         });
         q->wait();
-        sycl::free(partials, *q);
     } catch (const sycl::exception& e) {
         std::fprintf(stderr, "s2_gemv_fast launch: %s\n", e.what());
         std::exit(1);
