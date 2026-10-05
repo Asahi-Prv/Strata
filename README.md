@@ -1,11 +1,10 @@
 This project(Strata CUDA-to-SYCL) owner is not have strata required resource.
 My test scope is compile passed by icpx.
 
-## How to build and run (SYCL / Intel GPU)
+## How to build (SYCL / Intel GPU)
 
-This fork ports the CUDA device layer to **oneAPI SYCL** so the engine can run on an
-Intel GPU (e.g. Intel Arc). The ported kernels live in `src/kernels/sycl/` and replace
-their `.cu` counterparts one by one; the CMake build selects the backend with a flag.
+This fork ports the CUDA device layer to **oneAPI SYCL** for Intel GPUs. The ported
+kernels live in `src/kernels/sycl/`; the CMake build selects the backend with a flag.
 
 ### Requirements
 
@@ -41,7 +40,7 @@ On success the configure step prints
 -- Strata: SYCL kernels built (Intel GPU); add each ported kernel to this library as it lands
 ```
 
-and the build produces the backend kernel library:
+and the build produces the ported kernel library:
 
 - Windows: `build/strata_kernels_sycl.lib`
 - Linux:   `build/libstrata_kernels_sycl.a`
@@ -50,11 +49,8 @@ Every ported kernel in `src/kernels/sycl/` is compiled with `-fsycl` by `icpx`.
 
 ### Status
 
-- **Compilation:** verified with `icpx` — see the note at the top of this file.
-- **End-to-end run:** not wired up yet. The engine link targets (`strata_core`,
-  `strata_engine`, `strata`) still select the CUDA backend, so running a full
-  inference on the Intel GPU is follow-on work; the CUDA build remains the
-  operational path for now.
+The engine side is not yet wired to the SYCL backend, so it is likely not to run.
+Only the compilation of the ported kernels has been verified (with `icpx`).
 
 ## Credits
 
