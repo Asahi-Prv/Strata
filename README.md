@@ -49,8 +49,12 @@ Every ported kernel in `src/kernels/sycl/` is compiled with `-fsycl` by `icpx`.
 
 ### Status
 
-The engine side is not yet wired to the SYCL backend, so it is likely not to run.
-Only the compilation of the ported kernels has been verified (with `icpx`).
+- **Kernels:** every CUDA kernel now has a SYCL port under `src/kernels/sycl/`, and
+  the whole kernel library `strata_kernels_sycl` compiles and links with `icpx`.
+- **Engine:** the engine side is not yet wired to the SYCL backend, so the model
+  does not run on the Intel GPU yet. Remaining work: the device-layer build wiring,
+  replacing the CUDA graph / pinned-memory infrastructure, and the composed host
+  code that still calls the CUDA runtime directly.
 
 ## Credits
 
