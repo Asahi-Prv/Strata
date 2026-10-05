@@ -609,12 +609,34 @@ if(STRATA_ENABLE_SYCL AND NOT STRATA_ENABLE_CUDA)
                    src/kernels/sycl/native_qsa_indexer.cpp
                    src/kernels/sycl/native_qsa_score.cpp
                    src/kernels/sycl/native_ple_postops.cpp
+                   src/kernels/sycl/fused_gdn.cpp
+                   src/kernels/sycl/fused_gr.cpp
+                   src/kernels/sycl/gdn.cpp
+                   src/kernels/sycl/gr.cpp
+                   src/kernels/sycl/iq_kernels.cpp
+                   src/kernels/sycl/kv_q4.cpp
+                   src/kernels/sycl/kv_q8.cpp
+                   src/kernels/sycl/kv_stream.cpp
+                   src/kernels/sycl/native_flash_attn.cpp
+                   src/kernels/sycl/native_gdn.cpp
+                   src/kernels/sycl/native_gdn_preprocess.cpp
+                   src/kernels/sycl/native_mmvq.cpp
+                   src/kernels/sycl/native_router.cpp
+                   src/kernels/sycl/ple.cpp
+                   src/kernels/sycl/qsa.cpp
+                   src/kernels/sycl/qsa_decode_attn.cpp
+                   src/kernels/sycl/qsa_select.cpp
+                   src/kernels/sycl/router_top10.cpp
+                   src/kernels/sycl/s2_expert_grouped.cpp
+                   src/kernels/sycl/sampler.cpp
+                   src/kernels/sycl/shared_expert.cpp
+                   src/kernels/sycl/verify_kernels.cpp
                    src/kernels/sycl/mrope_table.cpp)
   target_include_directories(strata_kernels_sycl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_include_directories(strata_kernels_sycl PRIVATE third_party/ggml)
   # -fsycl is the whole SYCL build: the whole strata_kernels_sycl and strata_core get it, per-file so it does
   # not leak onto the host-only TUs that stay plain C++.
-   set_source_files_properties(src/kernels/sycl/rope.cpp src/kernels/sycl/dequant_s2.cpp src/kernels/sycl/dequant_q8_0.cpp src/kernels/sycl/elementwise.cpp src/kernels/sycl/quantize_q8_0.cpp src/kernels/sycl/bf16_gemv.cpp src/kernels/sycl/s_gemv.cpp src/kernels/sycl/s2_gemv.cpp src/kernels/sycl/quantize_act.cpp src/kernels/sycl/dequant_bf16.cpp src/kernels/sycl/native_moe.cpp src/kernels/sycl/native_rope.cpp src/kernels/sycl/native_gr_postops.cpp src/kernels/sycl/native_gr_norm.cpp src/kernels/sycl/s2_gemv_quads.cpp src/kernels/sycl/s2_gemv_q8.cpp src/kernels/sycl/s2_gemv_fast.cpp src/kernels/sycl/native_bf16.cpp src/kernels/sycl/native_qsa.cpp src/kernels/sycl/native_qsa_indexer.cpp src/kernels/sycl/native_qsa_score.cpp src/kernels/sycl/native_ple_postops.cpp PROPERTIES COMPILE_OPTIONS "-fsycl")
+   set_source_files_properties(src/kernels/sycl/rope.cpp src/kernels/sycl/dequant_s2.cpp src/kernels/sycl/dequant_q8_0.cpp src/kernels/sycl/elementwise.cpp src/kernels/sycl/quantize_q8_0.cpp src/kernels/sycl/bf16_gemv.cpp src/kernels/sycl/s_gemv.cpp src/kernels/sycl/s2_gemv.cpp src/kernels/sycl/quantize_act.cpp src/kernels/sycl/dequant_bf16.cpp src/kernels/sycl/native_moe.cpp src/kernels/sycl/native_rope.cpp src/kernels/sycl/native_gr_postops.cpp src/kernels/sycl/native_gr_norm.cpp src/kernels/sycl/s2_gemv_quads.cpp src/kernels/sycl/s2_gemv_q8.cpp src/kernels/sycl/s2_gemv_fast.cpp src/kernels/sycl/native_bf16.cpp src/kernels/sycl/native_qsa.cpp src/kernels/sycl/native_qsa_indexer.cpp src/kernels/sycl/native_qsa_score.cpp src/kernels/sycl/native_ple_postops.cpp src/kernels/sycl/fused_gdn.cpp src/kernels/sycl/fused_gr.cpp src/kernels/sycl/gdn.cpp src/kernels/sycl/gr.cpp src/kernels/sycl/iq_kernels.cpp src/kernels/sycl/kv_q4.cpp src/kernels/sycl/kv_q8.cpp src/kernels/sycl/kv_stream.cpp src/kernels/sycl/native_flash_attn.cpp src/kernels/sycl/native_gdn.cpp src/kernels/sycl/native_gdn_preprocess.cpp src/kernels/sycl/native_mmvq.cpp src/kernels/sycl/native_router.cpp src/kernels/sycl/ple.cpp src/kernels/sycl/qsa.cpp src/kernels/sycl/qsa_decode_attn.cpp src/kernels/sycl/qsa_select.cpp src/kernels/sycl/router_top10.cpp src/kernels/sycl/s2_expert_grouped.cpp src/kernels/sycl/sampler.cpp src/kernels/sycl/shared_expert.cpp src/kernels/sycl/verify_kernels.cpp PROPERTIES COMPILE_OPTIONS "-fsycl")
   message(STATUS "Strata: SYCL kernels built (Intel GPU); add each ported kernel to this library as it lands")
 endif()
 
