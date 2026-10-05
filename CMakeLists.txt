@@ -480,7 +480,10 @@ add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu
 target_include_directories(strata_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
-if(MSVC)
+# MSVC spells the AVX-512 target `/arch:AVX512`, but the oneAPI icx driver is an LLVM/Clang front end and
+# rejects it (it wants the GNU `-mavx512*` form) even though it is cl-compatible enough for CMake's MSVC
+# variable to be set on Windows.  Route IntelLLVM/Clang/GNU to the `else()` arm below.
+if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "IntelLLVM|Clang|GNU")
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 else()
@@ -534,7 +537,7 @@ if(STRATA_NATIVE_EXPERTS)
   # one-pass static linking has no cycle to resolve)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp)
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
-  if(MSVC)
+  if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "IntelLLVM|Clang|GNU")
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   else()
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
@@ -638,6 +641,159 @@ if(STRATA_ENABLE_SYCL AND NOT STRATA_ENABLE_CUDA)
   # not leak onto the host-only TUs that stay plain C++.
    set_source_files_properties(src/kernels/sycl/rope.cpp src/kernels/sycl/dequant_s2.cpp src/kernels/sycl/dequant_q8_0.cpp src/kernels/sycl/elementwise.cpp src/kernels/sycl/quantize_q8_0.cpp src/kernels/sycl/bf16_gemv.cpp src/kernels/sycl/s_gemv.cpp src/kernels/sycl/s2_gemv.cpp src/kernels/sycl/quantize_act.cpp src/kernels/sycl/dequant_bf16.cpp src/kernels/sycl/native_moe.cpp src/kernels/sycl/native_rope.cpp src/kernels/sycl/native_gr_postops.cpp src/kernels/sycl/native_gr_norm.cpp src/kernels/sycl/s2_gemv_quads.cpp src/kernels/sycl/s2_gemv_q8.cpp src/kernels/sycl/s2_gemv_fast.cpp src/kernels/sycl/native_bf16.cpp src/kernels/sycl/native_qsa.cpp src/kernels/sycl/native_qsa_indexer.cpp src/kernels/sycl/native_qsa_score.cpp src/kernels/sycl/native_ple_postops.cpp src/kernels/sycl/fused_gdn.cpp src/kernels/sycl/fused_gr.cpp src/kernels/sycl/gdn.cpp src/kernels/sycl/gr.cpp src/kernels/sycl/iq_kernels.cpp src/kernels/sycl/kv_q4.cpp src/kernels/sycl/kv_q8.cpp src/kernels/sycl/kv_stream.cpp src/kernels/sycl/native_flash_attn.cpp src/kernels/sycl/native_gdn.cpp src/kernels/sycl/native_gdn_preprocess.cpp src/kernels/sycl/native_mmvq.cpp src/kernels/sycl/native_router.cpp src/kernels/sycl/ple.cpp src/kernels/sycl/qsa.cpp src/kernels/sycl/qsa_decode_attn.cpp src/kernels/sycl/qsa_select.cpp src/kernels/sycl/router_top10.cpp src/kernels/sycl/s2_expert_grouped.cpp src/kernels/sycl/sampler.cpp src/kernels/sycl/shared_expert.cpp src/kernels/sycl/verify_kernels.cpp PROPERTIES COMPILE_OPTIONS "-fsycl")
   message(STATUS "Strata: SYCL kernels built (Intel GPU); add each ported kernel to this library as it lands")
+endif()
+
+# ============================================================================
+# ---- SYCLomatic port (Intel GPU): the FULL engine on the SYCL backend ------
+# ============================================================================
+#
+# The mirror of the CUDA block above, selected when STRATA_ENABLE_SYCL=ON.  Only
+# two things actually change with the backend:
+#
+#   * the device layer source swaps (device_sycl.cpp + pinned_sycl.cpp instead of
+#     device_cuda.cu + pinned.cu), and
+#   * the kernel library swaps (strata_kernels_sycl instead of the .cu sources).
+#
+# Everything above them - strata_engine, strata_prefill, the `strata` program and
+# the host parity harnesses - is built from the SAME host sources, compiled with
+# -fsycl, with include/strata/core/sycl_compat on the include path so their
+# `#include <cuda_runtime.h>` resolves to the SYCL shim.  The shim directory is
+# listed BEFORE include/ so it wins over any CUDA header that may be on the box.
+# The CUDA branch above is deliberately untouched: when STRATA_ENABLE_CUDA=ON
+# none of this runs.
+if(STRATA_ENABLE_SYCL AND NOT STRATA_ENABLE_CUDA)
+  set(STRATA_SYCL_COMPAT ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/core/sycl_compat)
+
+  # ---- strata_core: the SYCL device layer and the backend-neutral body ----
+  # graph.cpp still names cudaGraph*; it is compiled against the shim until its
+  # GraphRegistry gets its own SYCL port.  pinned.cu is a .cu and cannot be built
+  # without nvcc, so the SYCL-suffixed pinned_sycl.cpp takes its place.
+  add_library(strata_core STATIC
+              src/core/device_sycl.cpp
+              src/core/device_runtime.cpp
+              src/core/pinned_sycl.cpp
+              src/platform/memory.cpp
+              src/core/graph.cpp
+              src/core/weights.cpp
+              src/core/layout.cpp)
+  target_include_directories(strata_core PUBLIC
+    ${STRATA_SYCL_COMPAT}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(strata_core PUBLIC strata_plan strata_warnings)
+  # -fsycl on the device layer and on every host TU that calls through the shim.
+  set_source_files_properties(src/core/device_sycl.cpp src/core/pinned_sycl.cpp
+                              src/core/graph.cpp src/core/weights.cpp
+                              PROPERTIES COMPILE_OPTIONS "-fsycl")
+  # The link step needs -fsycl as well: it pulls in the SYCL runtime and the
+  # offloaded objects.  PUBLIC so the rule reaches the `strata` link line too.
+  target_link_options(strata_core PUBLIC "-fsycl")
+
+  # `strata-device` names no backend: it prints what the active runtime reports.
+  add_executable(strata-device src/core/device_main.cpp)
+  target_link_libraries(strata-device PRIVATE strata_core)
+
+  # ---- strata_kernels: the ported SYCL library replaces the .cu kernels ----
+  # ngram.cpp / ple_reader.cpp / direct_file.cpp are backend-neutral host helpers
+  # that lived in strata_kernels; they ride along in the SYCL kernel library.
+  target_sources(strata_kernels_sycl PRIVATE
+                 src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
+  target_link_libraries(strata_kernels_sycl PUBLIC strata_core strata_artifact)
+
+  # The name the engine links is unchanged; it now re-exports the SYCL kernels.
+  add_library(strata_kernels INTERFACE)
+  target_link_libraries(strata_kernels INTERFACE strata_kernels_sycl strata_core strata_artifact)
+
+  # ---- strata_engine: identical sources to the CUDA branch, built with -fsycl ----
+  add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp
+    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp)
+  target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(strata_engine PRIVATE "-fsycl")
+  target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu)
+
+  # ---- strata_prefill: the SYCL ports of gemm.cu / kernels.cu replace them ----
+  # prefill.cpp is backend-neutral host code that reaches the device through the
+  # shim; gemm_sycl.cpp (oneMKL) and kernels_sycl.cpp are the ported device half.
+  add_library(strata_prefill STATIC
+              src/prefill/gemm_sycl.cpp
+              src/prefill/kernels_sycl.cpp
+              src/prefill/prefill.cpp)
+  target_include_directories(strata_prefill PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  set_source_files_properties(src/prefill/gemm_sycl.cpp src/prefill/kernels_sycl.cpp
+                              PROPERTIES COMPILE_OPTIONS "-fsycl")
+  target_compile_options(strata_prefill PRIVATE "-fsycl")
+
+  # ---- oneMKL: gemm_sycl.cpp calls oneapi::mkl::blas::row_major::gemm ----
+  # oneMKL's CMake package is named `MKL` (MKLConfig.cmake) and exports the
+  # imported target `MKL::MKL_SYCL`, which carries both the oneMKL include dir
+  # and the SYCL oneMKL libraries.  It is linked PUBLIC because strata_prefill
+  # is a STATIC library: a private dependency's symbols would still be needed by
+  # the `strata` exe that consumes it, so the link line must propagate.
+  # ENABLE_SYCL_COMPILER is pinned ON because the config's AUTO probe only looks
+  # for Intel driver names, and this build runs the SYCL host code through icx.
+  set(MKL_INTERFACE lp64 CACHE STRING "" FORCE)
+  set(MKL_THREADING intel_thread CACHE STRING "" FORCE)
+  set(ENABLE_SYCL_COMPILER ON CACHE STRING "" FORCE)
+  find_package(MKL CONFIG QUIET)
+  if(TARGET MKL::MKL_SYCL)
+    set(STRATA_ONEMKL_LIBS MKL::MKL_SYCL)
+    message(STATUS "Strata: oneMKL found via MKLConfig.cmake -> MKL::MKL_SYCL")
+  else()
+    # Fallback for a toolchain without the MKL CMake package: take the raw
+    # libs and the include dir straight from MKLROOT (oneAPI's mkl/latest).
+    if(DEFINED ENV{MKLROOT})
+      set(_strata_mklroot "$ENV{MKLROOT}")
+    else()
+      set(_strata_mklroot "C:/Program Files (x86)/Intel/oneAPI/mkl/latest")
+    endif()
+    find_path(STRATA_ONEMKL_INCLUDE oneapi/mkl.hpp HINTS "${_strata_mklroot}/include")
+    find_library(STRATA_MKL_SYCL NAMES mkl_sycl mkl_sycl_dll HINTS "${_strata_mklroot}/lib")
+    find_library(STRATA_MKL_INTEL_LP64 NAMES mkl_intel_lp64 HINTS "${_strata_mklroot}/lib")
+    find_library(STRATA_MKL_INTEL_THREAD NAMES mkl_intel_thread HINTS "${_strata_mklroot}/lib")
+    find_library(STRATA_MKL_CORE NAMES mkl_core HINTS "${_strata_mklroot}/lib")
+    find_library(STRATA_LIBIOMP5 NAMES libiomp5md
+                 HINTS "${_strata_mklroot}/../compiler/latest/lib" "${_strata_mklroot}/../compiler/latest/lib/intel64")
+    if(STRATA_ONEMKL_INCLUDE AND STRATA_MKL_SYCL AND STRATA_MKL_CORE)
+      target_include_directories(strata_prefill PUBLIC "${STRATA_ONEMKL_INCLUDE}")
+      target_link_directories(strata_prefill PUBLIC "${_strata_mklroot}/lib")
+      set(STRATA_ONEMKL_LIBS "${STRATA_MKL_SYCL}" "${STRATA_MKL_INTEL_LP64}"
+          "${STRATA_MKL_INTEL_THREAD}" "${STRATA_MKL_CORE}")
+      if(STRATA_LIBIOMP5)
+        list(APPEND STRATA_ONEMKL_LIBS "${STRATA_LIBIOMP5}")
+      endif()
+      message(STATUS "Strata: oneMKL found via raw libs under ${_strata_mklroot}")
+    else()
+      message(FATAL_ERROR
+        "SYCL prefill needs oneMKL: neither MKL::MKL_SYCL nor the raw libs under '${_strata_mklroot}' were found.")
+    endif()
+  endif()
+  target_link_libraries(strata_prefill PUBLIC strata_engine ${STRATA_ONEMKL_LIBS})
+
+  # ---- `strata` ----
+  add_executable(strata src/program/generate.cpp)
+  target_compile_options(strata PRIVATE "-fsycl")
+  target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
+
+  # ---- host parity harnesses: CUDA::cudart is replaced by the shim ----
+  set(STRATA_SYCL_PARITY_TESTS
+      dequant_s2_parity s2_gemv_parity iq_parity shared_expert_parity gr_parity gdn_parity
+      s2_gemv_q8_parity sampler_parity rope_parity quantize_act_parity router_top10_parity
+      s_gemv_parity elementwise_parity bf16_gemv_parity s_gemv_q8k_parity qsa_parity ple_parity
+      kv_q8_parity kv_stream_parity kv_q4_parity)
+  foreach(_t IN LISTS STRATA_SYCL_PARITY_TESTS)
+    add_executable(${_t} src/kernels/${_t}.cpp)
+    target_compile_options(${_t} PRIVATE "-fsycl")
+    target_link_libraries(${_t} PRIVATE strata_kernels)
+  endforeach()
+
+  add_executable(platform_memory_test src/platform/memory_test.cpp)
+  target_compile_options(platform_memory_test PRIVATE "-fsycl")
+  target_link_libraries(platform_memory_test PRIVATE strata_core)
+
+  add_executable(ple_reader_test src/ngram/ple_reader_test.cpp)
+  target_compile_options(ple_reader_test PRIVATE "-fsycl")
+  target_link_libraries(ple_reader_test PRIVATE strata_kernels)
+
+  message(STATUS "Strata: SYCL engine built (Intel GPU) - core/engine/prefill/strata + host parity via the shim")
 endif()
 
 
