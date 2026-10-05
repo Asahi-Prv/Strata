@@ -128,6 +128,13 @@ std::unique_ptr<DeviceRuntime> make_sycl_runtime() {
     return std::make_unique<SyclRuntime>();
 }
 
+/// The process-wide backend selector (`device.hpp`).  `device_runtime.cpp` is backend-agnostic and calls
+/// `select_runtime` to obtain the one runtime; the CUDA backend would answer `make_cuda_runtime()`.  In a SYCL
+/// build only this backend is linked, so any requested kind resolves to the SYCL runtime.
+std::unique_ptr<DeviceRuntime> select_runtime(DeviceKind) {
+    return make_sycl_runtime();
+}
+
 /// The default queue for kernels launched on a null stream.  Defined outside the anonymous namespace so it has
 /// external linkage (SYCL kernel files link to it); it just hands back the same static queue the backend uses.
 void* default_sycl_queue() {
