@@ -61,6 +61,9 @@ Every ported kernel in `src/kernels/sycl/` is compiled with `-fsycl` by `icpx`.
   them) - neither was available here - so generation on the Intel GPU has not been
   exercised. The runtime numerical correctness of the ported kernels is likewise
   not yet validated against the CUDA oracle.
+- **Device backend (verified):** a SYCL build's `strata-device` runs and
+  enumerates the real GPU through oneAPI SYCL -
+  `device 0: Intel(R) Arc(TM) B570 Graphics, 160 compute units, 9.641 GiB, driver 100`.
 
 ## Credits
 
