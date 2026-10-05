@@ -781,7 +781,10 @@ if(STRATA_ENABLE_SYCL AND NOT STRATA_ENABLE_CUDA)
       kv_q8_parity kv_stream_parity kv_q4_parity)
   foreach(_t IN LISTS STRATA_SYCL_PARITY_TESTS)
     add_executable(${_t} src/kernels/${_t}.cpp)
-    target_compile_options(${_t} PRIVATE "-fsycl")
+    # -ffp-contract=off: the oneAPI icx driver defaults to fast-math contraction, which makes a parity
+    # test's own host `std::fma` lower to a mul+add and defeats its FMA-observability self-check.  The
+    # kernels are built normally; only these test TUs need exact separate rounding.
+    target_compile_options(${_t} PRIVATE "-fsycl" "-ffp-contract=off" "-fno-fast-math")
     target_link_libraries(${_t} PRIVATE strata_kernels)
   endforeach()
 

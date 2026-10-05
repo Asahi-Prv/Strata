@@ -592,7 +592,7 @@ inline cudaError_t cudaEventDestroy(cudaEvent_t event) {
     return cudaSuccess;
 }
 
-inline cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream) {
+inline cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream = nullptr) {
     return guard([&]() -> cudaError_t {
         if (!event) return fail_error(cudaErrorInvalidValue, "cudaEventRecord: null event");
         event->stamp = std::chrono::steady_clock::now();
