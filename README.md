@@ -49,12 +49,18 @@ Every ported kernel in `src/kernels/sycl/` is compiled with `-fsycl` by `icpx`.
 
 ### Status
 
-- **Kernels:** every CUDA kernel now has a SYCL port under `src/kernels/sycl/`, and
+- **Kernels:** every CUDA kernel has a SYCL port under `src/kernels/sycl/`, and
   the whole kernel library `strata_kernels_sycl` compiles and links with `icpx`.
-- **Engine:** the engine side is not yet wired to the SYCL backend, so the model
-  does not run on the Intel GPU yet. Remaining work: the device-layer build wiring,
-  replacing the CUDA graph / pinned-memory infrastructure, and the composed host
-  code that still calls the CUDA runtime directly.
+- **Engine:** the full engine now **builds** on the SYCL backend. A
+  `STRATA_ENABLE_SYCL=ON` configure produces `strata.exe` (plus `strata_core`,
+  `strata_engine` and `strata_prefill` on oneMKL) through a CUDA-to-SYCL
+  compatibility shim (`include/strata/core/sycl_compat/cuda_runtime.h`);
+  `strata.exe` starts and runs its host setup.
+- **Not verified end to end:** a full token generation needs the model pack
+  (~38 GB) and a CPU with AVX-512 VNNI/VBMI (the engine's expert kernel requires
+  them) - neither was available here - so generation on the Intel GPU has not been
+  exercised. The runtime numerical correctness of the ported kernels is likewise
+  not yet validated against the CUDA oracle.
 
 ## Credits
 
