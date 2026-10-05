@@ -189,6 +189,7 @@ inline bool geometry(int type, int& block_elems, int& block_bytes) {
     case 12: block_elems = 256; block_bytes = 144; return true;
     case 13: block_elems = 256; block_bytes = 176; return true;
     case 14: block_elems = 256; block_bytes = 210; return true;
+    case 23: block_elems = 256; block_bytes = 136; return true;
     case 42: block_elems = 64; block_bytes = 18; return true;
     default: return false;
     }
@@ -222,6 +223,7 @@ void launch(int type, const uint8_t* blocks, int64_t row0, int64_t rows, int64_t
             case 13: group32<13>(rb, (int) gi, out + off); break;
             case 14: group32<14>(rb, (int) gi, out + off); break;
             case 20: group32<20>(rb, (int) gi, out + off); break;
+            case 23: group32<23>(rb, (int) gi, out + off); break;
             case 42: group32<42>(rb, (int) gi, out + off); break;
             }
         });
