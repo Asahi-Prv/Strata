@@ -61,10 +61,13 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
 
                 float amax = 0.0f;
                 for (int i = 0; i < 32; ++i) amax = std::fmax(amax, std::fabs(xb[i]));
-                // VERBATIM from cpu/expert.cpp:144-145, including the amax > 0 guard, so the fp32 value written
-                // here is bit-identical to the `s` the CPU path used.
-                const float s = amax > 0.f ? amax / 127.f : 0.f;
-                const float inv = s > 0.f ? 1.f / s : 0.f;
+                // VERBATIM from cpu/expert.cpp act_quant_q8_1, including the amax > 0 guard, so the fp32 value
+                // written here is bit-identical to the `s` the CPU path used.  The divisions are computed in
+                // f64 and rounded once to f32: icpx's device `/` on the Arc is an approximate reciprocal
+                // (~1 ulp), which would otherwise make `s` and `inv` disagree with the CPU's correctly-rounded
+                // f32 divide.  (Same reason for the f64 divides in quantize_q8_K below.)
+                const float s = amax > 0.f ? (float) ((double) amax / 127.0) : 0.f;
+                const float inv = s > 0.f ? (float) (1.0 / (double) s) : 0.f;
                 scales[b] = s;
 
                 const uint16_t d16bits = f16_from_f32(s);
@@ -123,12 +126,18 @@ void quantize_q8_K(const float* x, uint8_t* blocks, int64_t n, void* stream) {
                     for (int j = 0; j < QK_K / 16; ++j) bsums[j] = 0;
                     return;
                 }
-                const float iscale = -127.0f / max;          // -127, NOT -128; see quantize_act.hpp
+                // EXACT DIVISION, NOT `-127.0f / max`.  icpx lowers an f32 `/` on the Arc to an approximate
+                // reciprocal (~1 ulp off, measured 91/402 scales wrong), while the parity reference - and the
+                // CPU path - use a correctly-rounded f32 divide.  Computing in f64 and rounding once back to
+                // f32 reproduces the IEEE result bit-for-bit (0/402 mismatches) and keeps `iscale` bit-identical
+                // to the host, which the quant bytes and the stored `d` both depend on.
+                const float iscale = (float) (-127.0 / (double) max);   // -127, NOT -128; see quantize_act.hpp
                 for (int j = 0; j < QK_K; ++j) {
-                    // `iscale * xb[j]` as a standalone float rounds to F32 before nearest_int_dev - the
-                    // __fmul_rn the source pins, which avoids the FMA contraction a bare `iscale*xb[j]+12582912`
-                    // expression would do and which flips the result just off a .5 boundary.
-                    const float prod = iscale * xb[j];
+                    // `sycl::fma(a, b, 0.0f)` is the __fmul_rn the source pins: a single round-to-nearest
+                    // multiply with no chance of the compiler contracting it into the `+12582912.0f` inside
+                    // nearest_int_dev - a contraction that would flip the result just off a .5 boundary.  Same
+                    // idiom as s2_expert_grouped.cpp's `__fmul_rn` sites.
+                    const float prod = sycl::fma(iscale, xb[j], 0.0f);
                     const int v = nearest_int_dev(prod);
                     qs[j] = (v > 127) ? (int8_t) 127 : (int8_t) v;   // MIN only - the source has no lower clamp
                 }
@@ -137,7 +146,9 @@ void quantize_q8_K(const float* x, uint8_t* blocks, int64_t n, void* stream) {
                     for (int ii = 0; ii < 16; ++ii) sum += qs[j * 16 + ii];
                     bsums[j] = (int16_t) sum;
                 }
-                *d = 1.0f / iscale;
+                // Same exact-division requirement as `iscale` above: the parity reference stores `1.0f/iscale`
+                // with a correctly-rounded f32 divide.
+                *d = (float) (1.0 / (double) iscale);
             });
         });
         if (stream == nullptr) q->wait();

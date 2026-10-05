@@ -22,8 +22,10 @@
 // THE SYCL PORT.  icpx 2026.1 exposes no warp-shuffle surface, so every block reduction below (the scalar
 // gate's 2560-element double dot, the `<<<1,256>>>` tree) becomes ONE WORK-ITEM walking the reduction serially -
 // the shape `native_gr_norm` uses.  The GEMV/quantization dependency helpers keep their own SYCL ports and are
-// called by name; because icpx 2026.1 queues are OUT-OF-ORDER, each submit is followed by a `q->wait()` before
-// the next dependent stage, exactly as `native_ple_postops` does.  The FP32 fast-math intrinsics of the native
+// called by name.  The caller's non-null streams are IN-ORDER, so submission order is execution order and no
+// host barrier is needed between dependent stages - which is also what keeps the function recordable into a
+// command graph, where a host `q->wait()` is illegal.  Only the null stream (the out-of-order default queue)
+// is followed by a gated `if (stream == nullptr) q->wait()`.  The FP32 fast-math intrinsics of the native
 // path (`__expf`, `__fdividef`) are approximated with `sycl::exp` and plain division - recorded, not hidden: the
 // native swiglu/sigmoid bytes are not reproducible without `--use_fast_math`.
 #include "strata/kernels/shared_expert.hpp"
@@ -174,13 +176,13 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
         native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
         native_mmvq(nw.gate_type, nw.gate_data, nw.q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
         native_mmvq(nw.up_type, nw.up_data, nw.q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
-        q->wait();
+        if (stream == nullptr) q->wait();
         const int n = (int) (n_ff * n_tok);
         native_swiglu_run(gate, up, gate, n, q);
-        q->wait();
+        if (stream == nullptr) q->wait();
         native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
         native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
-        q->wait();
+        if (stream == nullptr) q->wait();
         for (int t = 0; t < n_tok; ++t) {
             if (native_bf16) {
                 bf16_gemv_fp32_mmvf(x + (size_t) t * n_embd, gate_inp_bf16, g + t, n_embd, 1, stream);
@@ -188,7 +190,7 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
             } else {
                 scalar_gate_run(x_bf16 + (size_t) t * n_embd, gate_inp_bf16, g + t, (int) n_embd, q);
             }
-            q->wait();
+            if (stream == nullptr) q->wait();
         }
         scale_rows_run(out, g, (int) n_embd, n_tok, q);
         if (stream == nullptr) q->wait();
@@ -269,17 +271,17 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
             native_mmvq(native->gate_type, native->gate_data, native->q8_1, gate, (int) n_embd, (int) n_ff, 1, stream);
         else
             gemv(gate_form, gate_codes, gate_scales, gate_off, x_q8_0, x_q8k, gate, n_embd, n_ff);
-        q->wait();
+        if (stream == nullptr) q->wait();
         if (native_up)
             native_mmvq(native->up_type, native->up_data, native->q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
         else
             gemv(up_form, up_codes, up_scales, up_off, x_q8_0, x_q8k, up, n_embd, n_ff);
-        q->wait();
+        if (stream == nullptr) q->wait();
         if (native_projection)
             native_swiglu_run(gate, up, gate, (int) n_ff, q);
         else
             swiglu_run(gate, up, gate, (int) n_ff, q);
-        q->wait();
+        if (stream == nullptr) q->wait();
 
         // down: (n_ff) -> (n_embd), and THE INTERMEDIATE IS QUANTIZED TO THE DOWN WEIGHT'S OWN CONTRACT - which is
         // what `ggml_mul_mat` does for every matmul in the model.  It used to be rounded to fp16 with no
@@ -302,7 +304,7 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
             quantize_q8_0(gate, h_q8_0, n_ff, stream);
             gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
         }
-        q->wait();
+        if (stream == nullptr) q->wait();
 
         // the per-token scalar gate, then the multiply.  Note the gate is computed from `x`, the ORIGINAL hidden
         // state, not from anything the expert produced. The historical branch uses BF16-rounded inputs; the
@@ -315,7 +317,7 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
         } else {
             scalar_gate_run(x_bf16, gate_inp_bf16, g, (int) n_embd, q);
         }
-        q->wait();
+        if (stream == nullptr) q->wait();
         scale_run(out, g, (int) n_embd, q);
 
         if (stream == nullptr) q->wait();

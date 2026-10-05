@@ -124,8 +124,8 @@ void embedding_gather(const uint8_t* codes, const float* scales, const float* of
                 const unsigned mask = (1u << code_bits) - 1u;
                 const int code = (codes[i / per_byte] >> ((i % per_byte) * code_bits)) & mask;
                 const int64_t group = i / group_elems;
-                const float product = (float) (code + code_bias) * scales[group];
-                out[i] = product + (offsets ? offsets[group] : 0.0f);
+                const float product = sycl::fma((float) (code + code_bias), scales[group], 0.0f);
+                out[i] = sycl::fma(product, 1.0f, offsets ? offsets[group] : 0.0f);
             });
         });
         // The CUDA launcher did NOT sync_if_needed here; there is no wait on the default queue either.

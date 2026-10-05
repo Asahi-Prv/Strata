@@ -58,10 +58,10 @@ void s2_gemv_q8(const uint8_t* act, const uint8_t* codes, const float* scales, f
                     const float w1 = (float)((int)((byte >> 2) & 3) - 1) * d;
                     const float w2 = (float)((int)((byte >> 4) & 3) - 1) * d;
                     const float w3 = (float)((int)((byte >> 6) & 3) - 1) * d;
-                    a0 += w0 * ((float)blk[2 + off + 0] * dx);
-                    a1 += w1 * ((float)blk[2 + off + 1] * dx);
-                    a2 += w2 * ((float)blk[2 + off + 2] * dx);
-                    a3 += w3 * ((float)blk[2 + off + 3] * dx);
+                    a0 += w0 * ((float)(int8_t)blk[2 + off + 0] * dx);
+                    a1 += w1 * ((float)(int8_t)blk[2 + off + 1] * dx);
+                    a2 += w2 * ((float)(int8_t)blk[2 + off + 2] * dx);
+                    a3 += w3 * ((float)(int8_t)blk[2 + off + 3] * dx);
                 }
                 partials[lane] = (a0 + a1) + (a2 + a3);
                 sycl::group_barrier(item.get_group());
