@@ -760,6 +760,15 @@ def make_handler(svc: Service):
         def log_message(self, fmt, *args):
             pass
 
+        def handle_one_request(self):
+            # A client that hangs up before we finish answering (WinError 10053/10054, a broken pipe) makes
+            # wfile.write / send_header raise ConnectionError.  http.server would otherwise print a traceback
+            # for a request that is already over, so absorb it and close the connection instead.
+            try:
+                super().handle_one_request()
+            except ConnectionError:
+                self.close_connection = True
+
         def _json(self, code, obj):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
